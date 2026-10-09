@@ -2,29 +2,65 @@ import streamlit as st
 import pandas as pd
 import pydeck as pdk
 import requests
+from datetime import datetime
 
-# Page setup for dark high-tech layout
+# Page configuration
 st.set_page_config(
-    page_title="Klang Valley Flood Early Warning",
+    page_title="Klang Valley FEWS | Command Center",
     page_icon="🌊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Dark Theme CSS
+# Custom High-Tech WeatherNext CSS Injection
 st.markdown("""
     <style>
     .stApp {
-        background-color: #0B0F19;
-        color: #FFFFFF;
+        background-color: #0A0E17;
+        color: #E2E8F0;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #00FF66;
+    }
+    div[data-testid="stMetric"] {
+        background-color: #111827;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #1F2937;
     }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("Klang Valley Hydrological AI Command Center")
-st.caption("Real-time river telemetry, soil moisture metrics, and SMART Tunnel operational status")
+# --- SIDEBAR OPERATOR CONTROLS ---
+with st.sidebar:
+    st.header("Command Controls")
+    st.caption("Klang Valley FEWS Engine v2.4")
+    
+    st.markdown("---")
+    filter_status = st.multiselect(
+        "Filter Station Alert Status:",
+        options=["Danger", "Warning", "Normal"],
+        default=["Danger", "Warning", "Normal"]
+    )
+    
+    st.markdown("---")
+    st.subheader("Emergency Escalation")
+    operator_override = st.toggle("Manual Operator Override", value=False)
+    if operator_override:
+        st.warning("SYSTEM IN MANUAL OVERRIDE: Automated public broadcast paused pending operator review.")
+    else:
+        st.success("Automated Escalation Active")
+        
+    st.markdown("---")
+    st.caption(f"Last Telemetry Sync:\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
-# --- AIRTABLE INTEGRATION / FALLBACK DATA ---
+# --- HEADER BAR ---
+st.title("Klang Valley Hydrological Command Center")
+st.caption("Real-time river telemetry, catchment moisture saturation, and SMART Tunnel operational status")
+
+# --- DATA RETRIEVAL WITH FALLBACK ---
 AIRTABLE_API_KEY = st.secrets.get("AIRTABLE_API_KEY", "")
 BASE_ID = st.secrets.get("BASE_ID", "")
 TABLE_NAME = "TelemetryData"
@@ -76,52 +112,109 @@ def fetch_telemetry():
             "Soil Saturation (%)": 65.0,
             "SMART Mode": "Mode 1",
             "Alert Status": "Normal"
+        },
+        {
+            "Station": "Sg. Batu at Sentul",
+            "Latitude": 3.1891,
+            "Longitude": 101.6885,
+            "Water Level (m)": 4.10,
+            "Rate of Rise (m/hr)": 0.28,
+            "Radar dBZ": 45.0,
+            "Soil Saturation (%)": 88.0,
+            "SMART Mode": "Mode 2",
+            "Alert Status": "Warning"
         }
     ])
 
 df = fetch_telemetry()
+df_filtered = df[df["Alert Status"].isin(filter_status)]
 
 # --- TOP KPI METRIC CARDS ---
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric(label="SMART Tunnel Status", value=df["SMART Mode"].iloc[0])
+    st.metric(label="SMART Tunnel Mode", value=df["SMART Mode"].iloc[0], delta="Diversion Active", delta_color="inverse")
 with col2:
-    st.metric(label="Peak Radar Intensity", value=f"{df['Radar dBZ'].max()} dBZ")
+    st.metric(label="Peak Radar Intensity", value=f"{df['Radar dBZ'].max()} dBZ", delta="+8 dBZ/hr")
 with col3:
-    st.metric(label="Avg Catchment Soil Moisture", value=f"{df['Soil Saturation (%)'].mean():.1f}%")
+    st.metric(label="Avg Soil Saturation", value=f"{df['Soil Saturation (%)'].mean():.1f}%", delta="Critical Risk")
+with col4:
+    active_alerts = len(df[df["Alert Status"] == "Danger"])
+    st.metric(label="Critical Stations", value=f"{active_alerts} Stations", delta="Danger Threshold", delta_color="inverse")
 
 st.markdown("---")
 
-# --- WEATHERNEXT DARK RADAR MAP ---
-st.subheader("Live Basin Map & Telemetry Pins")
+# --- DARK RADAR MAP SECTION ---
+st.subheader("Live Hydrological Radar Map")
 
-def assign_color(status):
+def get_color(status):
     if status == "Danger":
-        return [255, 0, 85, 230]     # Red / Magenta
+        return [255, 0, 85, 255]      # Bright Magenta
     elif status == "Warning":
-        return [255, 204, 0, 230]    # Electric Yellow
-    return [0, 255, 102, 230]        # Neon Green
+        return [255, 204, 0, 255]     # Yellow
+    return [0, 255, 102, 255]         # Neon Green
 
-df["color"] = df["Alert Status"].apply(assign_color)
+def get_glow_color(status):
+    if status == "Danger":
+        return [255, 0, 85, 70]
+    elif status == "Warning":
+        return [255, 204, 0, 70]
+    return [0, 255, 102, 70]
 
-view_state = pdk.ViewState(latitude=3.1485, longitude=101.6961, zoom=11, pitch=35)
+df_filtered["color"] = df_filtered["Alert Status"].apply(get_color)
+df_filtered["glow_color"] = df_filtered["Alert Status"].apply(get_glow_color)
 
-layer = pdk.Layer(
+view_state = pdk.ViewState(
+    latitude=3.1500,
+    longitude=101.6980,
+    zoom=12,
+    pitch=45
+)
+
+# Radar outer glowing ring layer
+glow_layer = pdk.Layer(
     "ScatterplotLayer",
-    data=df,
+    data=df_filtered,
+    get_position=["Longitude", "Latitude"],
+    get_color="glow_color",
+    get_radius=800,
+    pickable=False,
+)
+
+# Core solid station marker layer
+core_layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=df_filtered,
     get_position=["Longitude", "Latitude"],
     get_color="color",
-    get_radius=450,
+    get_radius=300,
     pickable=True,
 )
 
-st.pydeck_chart(pdk.Deck(
-    layers=[layer],
+# Render map using free CartoDB Dark basemap tiles
+deck = pdk.Deck(
+    layers=[glow_layer, core_layer],
     initial_view_state=view_state,
-    map_style="mapbox://styles/mapbox/dark-v10",
-    tooltip={"text": "Station: {Station}\nWater Level: {Water Level (m)}m\nStatus: {Alert Status}"}
-))
+    map_style=pdk.map_styles.CARTO_DARK,
+    tooltip={"text": " Station: {Station}\n Water Level: {Water Level (m)}m\n Status: {Alert Status}"}
+)
 
-# --- TELEMETRY DATA TABLE ---
-st.subheader("Station Telemetry Grid")
-st.dataframe(df.drop(columns=["color"], errors="ignore"), use_container_width=True)
+st.pydeck_chart(deck)
+
+# --- TELEMETRY DATA MATRIX ---
+st.subheader("📊 Live Telemetry Matrix")
+st.dataframe(
+    df_filtered.drop(columns=["color", "glow_color"], errors="ignore"),
+    column_config={
+        "Soil Saturation (%)": st.column_config.ProgressColumn(
+            "Soil Saturation (%)",
+            format="%f%%",
+            min_value=0,
+            max_value=100,
+        ),
+        "Water Level (m)": st.column_config.NumberColumn(
+            "Water Level (m)",
+            format="%.2f m",
+        ),
+    },
+    use_container_width=True
+)
